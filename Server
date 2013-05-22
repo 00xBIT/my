@@ -1,0 +1,254 @@
+#include <windows.h>
+#include <iostream>
+#include <string>
+#include <time.h>
+
+#pragma comment(lib,"ws2_32.lib")
+
+using namespace std;
+
+struct ClientServiceThread
+{
+	SOCKET listener;
+	SOCKET * socket_client;
+	struct sockaddr_in * address_client;
+	int clientMaxCount;
+	int clientCount;
+};
+
+struct ClientExchangeThread
+{
+	ClientServiceThread * cst;
+	int clientIndex;
+};
+
+int FHash(int V)
+{
+	V=(V*13-21)%100;
+	
+	return V;
+}
+
+
+DWORD WINAPI ClientExchange(LPVOID data)
+{
+	int NumRand,		//	для Rand число которое отсылает сервер
+		err=0,
+		HashPWD=0,		//	hash от pwd 
+		HashPWDClient,	//	hash от клиентского pwd
+		IntPWD=0,		//	переводим PWD в числовое значение	
+		i,
+		len,			//	длина PWD
+		clock0=0,		//	копилка таймера
+		clock1=0;		//	временная переменная таймера
+	char buf[1024],
+		pwd[32]="toor";	//	верный PWD
+	bool end=false;
+	time_t rawtime;
+
+	srand ((unsigned)time(NULL));
+
+	ClientExchangeThread *cet = ((ClientExchangeThread*)data);
+	ClientServiceThread *cst = cet->cst;
+	
+	int idx = cet->clientIndex;
+	delete cet;
+	
+	recv(cst->socket_client[idx], buf, 1024, 0);
+	if (!_strnicmp(buf, "hello", 7))
+	{
+		memcpy(buf, "hello", 6);
+		send(cst->socket_client[idx], buf, 5, 0);
+	}
+	else
+		err = 1;
+	
+	
+	recv(cst->socket_client[idx], buf, 1024, 0);
+	if (!_strnicmp(buf, "root", 5))
+	{
+		NumRand=rand()%100;
+		itoa (NumRand,buf,10);
+		send(cst->socket_client[idx], buf, 4, 0);
+	}
+	else
+	{
+		memcpy(buf, "error login", 12);
+		send(cst->socket_client[idx], buf, 11, 0);
+		err = 1;
+	}
+	
+	len=strlen(pwd);
+	for(i=0;i<len;i++)
+		IntPWD+=int(pwd[i]);
+	HashPWD=FHash(FHash(IntPWD)+NumRand);
+	
+	recv(cst->socket_client[idx], buf, 1024, 0);
+	
+	HashPWDClient=atoi(buf);
+	if (HashPWD==HashPWDClient)
+	{
+		memcpy(buf, "success", 8);
+		send(cst->socket_client[idx], buf, 7, 0);
+	}
+	else
+	{
+		memcpy(buf, "error pwd", 10);
+		send(cst->socket_client[idx], buf, 19, 0);
+		err = 1;
+	}
+		
+	while (!end && !err)
+	{
+		recv(cst->socket_client[idx], buf, 1024, 0);
+		
+		if (!_strnicmp(buf, "start", 6))
+		{
+			clock1=time ( &rawtime );
+
+			memcpy(buf, "timer is start", 15);
+			send(cst->socket_client[idx], buf, 14, 0);
+		}
+		else if (!_strnicmp(buf, "stop", 5))
+		{
+			clock0 += time(&rawtime)-clock1;
+
+			memcpy(buf, "timer is stop", 14);
+			send(cst->socket_client[idx], buf, 13, 0);
+		}
+		else if (!_strnicmp(buf, "show", 5))
+		{
+			itoa (clock0,buf,3);
+			send(cst->socket_client[idx], buf, 3, 0);
+		}
+		else if (!_strnicmp(buf, "clear", 6))
+		{
+			clock0=0;
+			memcpy(buf, "ready", 6);
+			send(cst->socket_client[idx], buf, 5, 0);
+		}
+		else if (!_strnicmp(buf, "bye", 4))
+		{
+			memcpy(buf, "bye", 4);
+			send(cst->socket_client[idx], buf, 3, 0);
+
+			break;
+		}
+		else
+		{
+			memcpy(buf, "Error command", 14);
+			send(cst->socket_client[idx], buf, 13, 0);
+			err=1;
+		}
+	}
+		
+	cst->clientCount--;
+	closesocket(cst->socket_client[idx]);
+	cst->socket_client[idx] = INVALID_SOCKET;
+	
+	return 0;
+}
+
+DWORD WINAPI ClientService(LPVOID data)
+{
+	ClientServiceThread *cst = ((ClientServiceThread*)data);
+	while (true)
+	{
+		int i;
+		for (i = 0; i < cst->clientMaxCount; i++)
+			if (cst->socket_client[i] == INVALID_SOCKET)
+				break;
+		if (i < cst->clientMaxCount)
+		{
+			int sz = sizeof(sockaddr);
+			cst->socket_client[i] = accept(cst->listener, (struct sockaddr *) cst->address_client + i, &sz);
+			cst->clientCount++;
+			ClientExchangeThread* cet = new ClientExchangeThread;
+			cet->cst = cst;
+			cet->clientIndex = i;
+			DWORD cetThreadId;
+			CreateThread(0, 0, &ClientExchange, cet, 0, &cetThreadId);
+			Sleep(0);	
+		}
+		else
+			Sleep(500);
+	}
+}
+
+
+int main()
+{
+	WSADATA version;
+	
+	DWORD startErr = WSAStartup(0x0202, &version);
+	if (startErr)
+	{
+		cerr << "Windows socket library isn't version 2.2";
+		return 1;
+	}
+
+	ClientServiceThread* cst = new ClientServiceThread;
+	cst->listener = socket(AF_INET, SOCK_STREAM, 0);
+	if (cst->listener == INVALID_SOCKET)
+	{
+		return 2;
+	}
+
+	struct sockaddr_in address_server;
+	address_server.sin_family = AF_INET;
+	address_server.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
+	address_server.sin_port = htons(1024);
+
+	int bindErr = bind(cst->listener, (struct sockaddr *)&address_server, sizeof(address_server));
+	if (bindErr < 0)
+	{
+		return 3;
+	}
+
+	cst->clientMaxCount = 2;
+	cst->clientCount = 0;
+	cst->socket_client = new SOCKET[cst->clientMaxCount];
+	for (int i = 0; i < cst->clientMaxCount; i++)
+		cst->socket_client[i] = INVALID_SOCKET;
+	cst->address_client = new struct sockaddr_in[cst->clientMaxCount];
+	listen(cst->listener, cst->clientMaxCount);
+
+	DWORD cstThreadId;
+	HANDLE cstThread = CreateThread(0, 0, &ClientService, cst, 0, &cstThreadId);
+	Sleep(0);
+	string s;
+	bool exitServer = false;
+	while (!exitServer)
+	{
+		cin>>s;
+		if (!_strnicmp(s.c_str(), "exit", 5))
+			break;
+		else if (!_strnicmp(s.c_str(), "status", 5))
+		{
+			cout << "Clients connected = " << cst->clientCount << endl;
+			cout << "Clients max = " << cst->clientMaxCount << endl;
+			for (int i = 0, _i = 0; i < cst->clientMaxCount; i++)
+				if (cst->socket_client[i] != INVALID_SOCKET)
+				{
+					cout << "\tData of client #" << _i++ << endl;
+					unsigned long cl_ip = ntohl(cst->address_client[i].sin_addr.S_un.S_addr);
+					unsigned short cl_port = ntohs(cst->address_client[i].sin_port);
+					cout << "\tip = " << (int)((unsigned char*)&cl_ip)[3] << '.' << (int)((unsigned char*)&cl_ip)[2] << '.' << (int)((unsigned char*)&cl_ip)[1] << '.' << (int)((unsigned char*)&cl_ip)[0] << endl;
+					cout << "\tport = " << cl_port << endl;
+				}
+			cout << endl;
+		}
+		else
+			cout << "unknown command" << endl;
+	}
+
+	TerminateThread(cstThread, 1);
+	for (int i = 0; i < cst->clientMaxCount; i++)
+		if (cst->socket_client[i] != INVALID_SOCKET)
+			closesocket(cst->socket_client[i]);
+	delete [] cst->socket_client;
+	delete [] cst->address_client;
+	WSACleanup();
+	delete cst;
+	return 0;
+} 
