@@ -1,0 +1,29 @@
+#include<iostream>
+
+using namespace std;
+
+void main()
+{
+    setlocale (0,"");
+	int		n, k, x=0, i, y;
+	char*	str=new char;
+
+	cout<<"Введите число"<<endl<<"n=";
+	cin>>n;
+
+	cout<<"Введите число"<<endl<<"k=";
+	cin>>k;
+
+	itoa(n,str,10);							// функция перевода числа n в строку str
+	
+	y=strlen(str);
+	for(i=0;i<y;i++)
+	{
+		if(str[i]-48==k)					// в char хранится код символа а не число int, по этому нужно -48, чтобы получить само число на сравнение
+			x++;
+	}
+
+	cout<<"В числе n="<<n<<", "<<x<<" раз встречается число k="<<k<<endl;
+
+	return;
+}
